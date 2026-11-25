@@ -125,7 +125,7 @@ body.camera-on .cam-select:not([hidden]) { display: inline-flex; }
   max-width: 200px; text-overflow: ellipsis; cursor: pointer;
 }
 .cam-select select option, .cam-error-select select option { background: #0b1120; color: var(--ink); }
-.cam-error-attempts { list-style: none; margin: 8px 0 0; padding: 0; max-height: 160px; overflow: auto; font-size: 12px; }
+.cam-error-attempts { list-style: none; margin: 8px 0 0; padding: 0; max-height: 280px; overflow: auto; font-size: 12px; }
 .cam-error-attempts li { padding: 6px 0; border-top: 1px solid var(--line); color: var(--dim); }
 .cam-error-attempts li b { color: var(--ink); font-weight: 600; display: block; }
 .cam-error-attempts div { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; word-break: break-word; }
@@ -136,4 +136,6 @@ body.camera-on .cam-select:not([hidden]) { display: inline-flex; }
   body.camera-on .cam-select:not([hidden]) { order: 10; flex-basis: 100%; justify-content: center; }
   .cam-select select { max-width: 100%; }
   .status { top: 146px; }
+  .cam-error { max-height: calc(100vh - 24px); overflow: auto; }
+  .cam-error-attempts { max-height: none; }
 }
