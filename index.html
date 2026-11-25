@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Air Strings</title>
+  <meta name="description" content="Draw glowing strings in the air with your hands and pluck them. Runs entirely in your browser." />
+  <meta name="theme-color" content="#03050a" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2303050a'/%3E%3Cpath d='M6 24 Q16 4 26 8' stroke='%2366e0ff' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3Cpath d='M6 28 Q18 14 27 18' stroke='%23c38bff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <video id="video" playsinline muted></video>
+  <canvas id="stage" aria-label="Instrument canvas"></canvas>
+
+  <header class="bar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Air Strings</div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Input">
+        <button id="btn-camera" type="button" aria-pressed="false" title="Play with your hands (webcam)">Camera</button>
+        <button id="btn-mouse" type="button" aria-pressed="true" title="Play with mouse or touch">Mouse</button>
+      </div>
+      <button id="btn-snap" class="chip" type="button" aria-pressed="true" title="Snap pitch to a pentatonic scale (S)"><span class="long">Pentatonic</span><span class="short">Snap</span> <span class="state">on</span></button>
+      <button id="btn-clear" class="chip" type="button" title="Remove all strings (C)">Clear</button>
+      <button id="btn-help" class="chip icon" type="button" aria-expanded="false" aria-controls="help" title="How to play (H)">?</button>
+    </div>
+  </header>
+
+  <div id="status" class="status" aria-live="polite"></div>
+  <div id="hint" class="hint">Click and drag to draw a string</div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <aside id="help" class="help" hidden>
+    <div class="help-head">
+      <strong>How to play</strong>
+      <button id="btn-help-close" type="button" class="x" aria-label="Close help">×</button>
+    </div>
+    <div class="cols">
+      <section>
+        <h3>Hands</h3>
+        <ul>
+          <li><b>Make</b> pinch with both hands, pull apart, let go</li>
+          <li><b>Pluck</b> swipe a fingertip through a string; faster is louder</li>
+          <li><b>Retune</b> pinch an end and drag; shorter is higher</li>
+          <li><b>Delete</b> pinch the middle and fling it away</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Mouse</h3>
+        <ul>
+          <li><b>Make</b> click and drag on empty space</li>
+          <li><b>Pluck</b> sweep across a string, or drag across from one</li>
+          <li><b>Retune</b> drag an end dot</li>
+          <li><b>Delete</b> right-click or double-click a string</li>
+        </ul>
+      </section>
+    </div>
+    <p class="keys"><kbd>C</kbd> clear · <kbd>X</kbd>/<kbd>Del</kbd> delete selected · <kbd>S</kbd> snap · <kbd>H</kbd> help</p>
+    <p class="privacy">Up to 8 strings. Camera frames are processed on this device only; nothing is uploaded.</p>
+  </aside>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
