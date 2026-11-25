@@ -67,3 +67,19 @@ Scripts: `scripts/camera_devices.py` (outputs in `proof/camera-devices/`, git-ig
 | All fail | Panel lists Default, Busy, Good, IR with each error, plus the "Another app or browser tab…" hint |
 | Earlier scenarios (denied, retry, Overconstrained, GPU→CPU, CDN blocked) | All still pass; the only failed request is in the deliberately blocked-CDN test |
 Gesture unit tests (8/8 pass): a one-hand pinch on an end leaves the string unchanged; one hand on an end plus the other hand in empty air does nothing; a swipe near an end plucks and does not move it; a fast swipe with a brief pinch near an end only plucks; a two-hand pinch on both ends moves the string and raises its pitch; a two-hand pinch in empty air creates a string; pinch the middle and fling deletes; a mouse drag on one end still stretches. Mutation check: putting back single-hand grabbing fails 3 tests; removing the pinch debounce fails 4.
+
+## Clean camera feed + iOS audio unlock (commit 54b620f, live)
+Scripts: `scripts/brightness.py`, `scripts/mobile_audio.py`. Outputs go to `proof/mobile-audio/` (git-ignored).
+- Video region brightness (Chromium, fake stream, lower-left 300×80 px; canvas vs raw video frame): before 42.0 vs 100.8 (0.42×), after 102.3 vs 102.3 (1.00×).
+- Audio (tap on "Tap for sound", draw 2 strings, sweep):
+
+| Browser | Engine | State after tap | Silence → pluck peak RMS | Suspend → button / tap → running |
+|---|---|---|---|---|
+| WebKit 27.2, iPhone 15 emulation | worklet | running (44.1 kHz) | 0.00044 → 0.076 | yes / yes |
+| WebKit, iPhone 15, `?audio=fallback` | fallback | running | 0.00046 → 0.098 | yes / yes |
+| Chromium desktop | worklet | running (48 kHz) | 0.00033 → 0.136 | yes / yes |
+| Chromium desktop, `?audio=fallback` | fallback | running | 0.00038 → 0.150 | yes / yes |
+| Chromium, Pixel 7 emulation | worklet | running | 0.00036 → 0.137 | yes / yes |
+
+Console errors in all runs: 0. Desktop fake-camera flow + controls (`check.py`): 0 errors, 0 page errors, 0 failed requests, all 7 controls pass. `npm test`: 8/8.
+Real iPhone audio output can't be verified on this machine. WebKit here is the Linux build with iPhone emulation, not iOS.
