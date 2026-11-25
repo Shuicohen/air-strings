@@ -2,3 +2,6 @@ proof/*.mp4
 proof/*.png
 proof/*.json
 __pycache__/
+proof/**/*.png
+proof/**/*.json
+proof/**/*.mp4

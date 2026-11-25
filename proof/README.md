@@ -41,3 +41,15 @@ Browser: Playwright 1.65.2, Chromium headless shell 159. Media files and JSON ou
 
 ## 5. Screenshots
 `empty-1440.png`, `strings-1440.png`, `help-1440.png`, `camera-fake-stream-1440.png`, `empty-390.png`, `strings-390.png`, `help-390.png`. The mobile (390 px) run logged no console messages.
+
+## Camera hardening (commit c9b9586, re-tested on the live URL)
+Script: `scripts/camera_failures.py`. Outputs go to `proof/camera-hardening/` (git-ignored).
+| Scenario | Result |
+|---|---|
+| Permission denied (`--use-fake-ui-for-media-stream=deny`) | Panel shows step `camera` and `NotAllowedError: Permission denied`. **Use mouse** closes it and drawing works. **Retry** while still denied shows the panel again. |
+| Denied once, then allowed, then **Retry** | Camera on: `GPU · 1280×720` |
+| First getUserMedia throws OverconstrainedError | Falls back to `{video:true}` and the camera turns on: `GPU · 640×480` |
+| Both attempts fail (Overconstrained, then NotReadable) | Panel shows `NotReadableError…`, plus `First attempt: OverconstrainedError…` |
+| GPU delegate forced to fail (`?gpu=fail`) | Falls back to CPU tracking: `CPU · 1280×720` |
+| jsDelivr blocked | Panel shows step `tracker load` and `TypeError: Failed to fetch dynamically imported module…` |
+The normal fake-camera flow still shows 0 console errors, 0 page errors and 0 failed requests. The only failed request was in the deliberately blocked-CDN scenario.
