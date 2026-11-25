@@ -119,7 +119,15 @@ function pluck(s, velocity, at, u) {
   if (s.dying) return;
   const v = Math.max(0.12, Math.min(1, velocity));
   if (!s.voice) { s.voice = audio.createVoice(s.freq); updatePan(s); }
-  s.voice?.pluck(v);
+  if (s.voice) s.voice.pluck(v);
+  else if (audio.ready) {
+    // first gesture: the worklet is still loading, so play this pluck as soon as it is ready
+    audio.ready.then(() => {
+      if (s.dying) return;
+      if (!s.voice) { s.voice = audio.createVoice(s.freq); updatePan(s); }
+      s.voice?.pluck(v);
+    }).catch(() => {});
+  }
   s.amp = Math.min(1.4, s.amp * 0.4 + v);
   s.pluckT = now();
   s.pluckU = u;
