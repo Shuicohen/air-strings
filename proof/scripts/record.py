@@ -39,8 +39,10 @@ with sync_playwright() as p:
     cap("Stretch: drag an end dot. Shorter = higher (pentatonic snap on)")
     sweep((640, 170), (650, 300), steps=3)
     m.move(980, 250, steps=10); m.down()
+    before_stretch = page.evaluate("airStrings.strings()[0]")
     for i in range(1, 46):
         m.move(980 - i * 11, 250 + i * 1.0); time.sleep(0.03)
+    mid_stretch = page.evaluate("airStrings.strings()[0]")
     for i in range(1, 30):
         m.move(485 + i * 16, 295 - i * 1.2); time.sleep(0.03)
     m.up(); time.sleep(0.3)
@@ -50,8 +52,10 @@ with sync_playwright() as p:
     page.click("#btn-snap"); time.sleep(0.4)
     sweep((360, 300), (380, 420), steps=3)
     m.move(1020, 340, steps=10); m.down()
+    free_samples = []
     for i in range(1, 50):
         m.move(1020 - i * 9, 340); time.sleep(0.03)
+        if i % 8 == 0: free_samples.append(page.evaluate("airStrings.strings()[1].freq"))
     m.up(); time.sleep(0.4)
     page.click("#btn-snap"); time.sleep(0.3)
     cap("Delete: right-click a string (or X / Delete key)")
@@ -68,4 +72,4 @@ with sync_playwright() as p:
     ctx.close(); b.close()
 
 subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", video_path, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-movflags", "+faststart", out_mp4], check=True)
-print(json.dumps({"mp4": out_mp4, "retuned": retuned, "after_delete": after_delete, "cleared": cleared, "console_warn_err": log}, indent=1))
+print(json.dumps({"mp4": out_mp4, "string1_before_stretch": before_stretch, "string1_mid_stretch": mid_stretch, "string1_after": retuned[0], "string2_freq_while_dragging_snap_off": free_samples, "after_delete": after_delete, "cleared": cleared, "console_warn_err": log}, indent=1))
