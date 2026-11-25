@@ -53,3 +53,17 @@ Script: `scripts/camera_failures.py`. Outputs go to `proof/camera-hardening/` (g
 | GPU delegate forced to fail (`?gpu=fail`) | Falls back to CPU tracking: `CPU · 1280×720` |
 | jsDelivr blocked | Panel shows step `tracker load` and `TypeError: Failed to fetch dynamically imported module…` |
 The normal fake-camera flow still shows 0 console errors, 0 page errors and 0 failed requests. The only failed request was in the deliberately blocked-CDN scenario.
+
+## Camera picker + two-hand move rule (commits bcdb0a1 and bff5ebe, live)
+Scripts: `scripts/camera_devices.py` (outputs in `proof/camera-devices/`, git-ignored). Unit tests: `npm test`.
+| Scenario (live URL) | Result |
+|---|---|
+| Normal fake camera | Status `fake_device_0 · GPU · 1280×720`; dropdown lists `fake_device_0`; 0 console errors, 0 page errors, 0 failed requests; Mouse mode afterwards draws and plucks |
+| IR + Busy + Good stub | Calls: default → Busy Cam @1280 → Busy Cam @640 → Good Cam @1280 (IR never tried); status `Good Cam · GPU · 640×480` |
+| Reload | First call is `Good Cam @1280` (remembered) |
+| Dropdown → Busy | Fails at both resolutions; panel lists them; the remembered camera stays Good Cam |
+| Panel dropdown → Good | Camera back on, Good Cam |
+| Two working cams, dropdown → Second Cam | Status `Second Cam · …`, remembered = second |
+| All fail | Panel lists Default, Busy, Good, IR with each error, plus the "Another app or browser tab…" hint |
+| Earlier scenarios (denied, retry, Overconstrained, GPU→CPU, CDN blocked) | All still pass; the only failed request is in the deliberately blocked-CDN test |
+Gesture unit tests (8/8 pass): a one-hand pinch on an end leaves the string unchanged; one hand on an end plus the other hand in empty air does nothing; a swipe near an end plucks and does not move it; a fast swipe with a brief pinch near an end only plucks; a two-hand pinch on both ends moves the string and raises its pitch; a two-hand pinch in empty air creates a string; pinch the middle and fling deletes; a mouse drag on one end still stretches. Mutation check: putting back single-hand grabbing fails 3 tests; removing the pinch debounce fails 4.
