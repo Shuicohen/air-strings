@@ -180,3 +180,10 @@ export function noteName(f) {
   const m = Math.round(freqToMidi(f));
   return NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 }
+
+// Pitch for a string of length L px. ref = length that plays C4; shorter = higher.
+export function freqForLength(L, ref, snap) {
+  let f = 262 * (ref / Math.max(L, 20));
+  f = Math.max(82, Math.min(1568, f));
+  return snap ? snapPentatonic(f) : f;
+}

@@ -1,3 +1,5 @@
+import { handFromLandmarks } from './gestures.js';
+
 // Camera + MediaPipe HandLandmarker (both hands). Everything runs locally in the
 // browser; frames never leave the device.
 
@@ -14,6 +16,20 @@ const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmark
     return origError(...args);
   };
 }
+
+const HI = { name: '1280×720', c: { width: { ideal: 1280 }, height: { ideal: 720 } } };
+const LO = { name: '640×480', c: { width: { ideal: 640 }, height: { ideal: 480 } } };
+const ANY = { name: 'any', c: {} };
+const IR_RE = /\b(IR|infrared|hello)\b/i;
+const STORE_KEY = 'airStrings.camera';
+const deviceConstraints = (id, r) => ({ video: { deviceId: { exact: id }, ...r.c }, audio: false });
+function loadRemembered() {
+  try { const v = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return v && v.deviceId ? v : null; } catch { return null; }
+}
+function saveRemembered(d) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ deviceId: d.deviceId, label: d.label })); } catch {}
+}
+export function rememberDevice(d) { saveRemembered(d); }
 
 // Errors where retrying with plain {video:true} can help.
 const FALLBACK_NAMES = new Set(['OverconstrainedError', 'ConstraintNotSatisfiedError', 'NotFoundError', 'DevicesNotFoundError', 'NotReadableError', 'TrackStartError', 'AbortError', 'TypeError']);
@@ -46,12 +62,19 @@ export class HandTracker {
     this.state = new Map();
     this.frameErrors = 0;
     this.notes = []; // non-fatal events, e.g. "GPU failed, using CPU"
+    this.devices = [];
+    this.device = null;
+    this.attempts = [];
     this.onFatal = null;
   }
 
-  // Step 1. Must be called synchronously from the click handler so the browser
-  // still sees the user gesture. Returns a promise for the stream.
-  requestCamera() {
+  // Step 1. Must be called synchronously from a click/change handler so the browser
+  // still sees the user gesture (the first getUserMedia call happens before any await).
+  // opts.deviceId: only try that device (dropdown switch). Resolves to the stream; the
+  // chosen device and every attempt are kept on this.device / this.attempts.
+  requestCamera(opts = {}) {
+    this.attempts = [];
+    this.device = null;
     const md = navigator.mediaDevices;
     if (!window.isSecureContext) {
       const e = new Error('This page is not on HTTPS (or localhost), so the browser hides the camera.'); e.name = 'SecurityError';
@@ -61,23 +84,113 @@ export class HandTracker {
       const e = new Error('navigator.mediaDevices.getUserMedia is not available in this browser.'); e.name = 'NotSupportedError';
       return Promise.reject(new CameraStepError('camera', e));
     }
-    const preferred = { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
-    let first;
-    try { first = md.getUserMedia(preferred); } catch (e) { first = Promise.reject(e); }
-    return first.catch((err) => {
-      if (!FALLBACK_NAMES.has(err?.name)) throw new CameraStepError('camera', err);
-      this.notes.push(`Preferred camera settings failed (${err.name}); retried with any camera.`);
-      return md.getUserMedia({ video: true, audio: false }).catch((err2) => {
-        throw new CameraStepError('camera', err2, { firstError: `${err.name}: ${err.message}` });
-      });
+    const remembered = loadRemembered();
+    const only = opts.deviceId ? { deviceId: opts.deviceId, label: opts.label || '' } : null;
+    const first = only || remembered;
+    const firstPlan = first
+      ? { device: first, res: HI, constraints: deviceConstraints(first.deviceId, HI) }
+      : { device: { deviceId: '', label: 'Default camera (front-facing)' }, res: HI, constraints: { video: { facingMode: 'user', ...HI.c }, audio: false } };
+    const firstTry = this.tryOne(firstPlan); // getUserMedia called synchronously in here
+    return firstTry.catch(async (err) => {
+      if (!FALLBACK_NAMES.has(err?.name)) throw this.fail(err);
+      await this.refreshDevices();
+      const plan = this.buildPlan(firstPlan, only, remembered);
+      let lastErr = err;
+      for (const step of plan) {
+        try { return await this.tryOne(step); } catch (e) {
+          lastErr = e;
+          if (!FALLBACK_NAMES.has(e?.name)) throw this.fail(e);
+        }
+      }
+      throw this.fail(lastErr);
+    }).then(async (stream) => {
+      await this.refreshDevices();
+      const track = stream.getVideoTracks()[0];
+      const sid = track?.getSettings?.().deviceId;
+      const asked = this.device;
+      // Prefer the device we explicitly asked for; otherwise identify it from the track.
+      const match = (asked?.deviceId && this.devices.find((d) => d.deviceId === asked.deviceId))
+        || (sid && this.devices.find((d) => d.deviceId === sid));
+      this.device = match ? { deviceId: match.deviceId, label: match.label } : { deviceId: sid || '', label: track?.label || asked?.label || 'Camera' };
+      if (this.device.deviceId) saveRemembered(this.device);
+      return stream;
     });
+  }
+
+  // One getUserMedia attempt; records the outcome and stops any stream that came back unusable.
+  tryOne(step) {
+    const rec = { label: step.device.label || 'Camera', deviceId: step.device.deviceId, res: step.res.name, error: null };
+    this.attempts.push(rec);
+    let pr;
+    try { pr = navigator.mediaDevices.getUserMedia(step.constraints); } catch (e) { pr = Promise.reject(e); }
+    return pr.then((stream) => {
+      const track = stream.getVideoTracks()[0];
+      if (!track || track.readyState === 'ended') {
+        stream.getTracks().forEach((t) => t.stop());
+        const e = new Error('The camera returned no live video track'); e.name = 'NotReadableError';
+        throw e;
+      }
+      rec.ok = true;
+      this.device = step.device;
+      return stream;
+    }, (e) => { throw e; }).catch((e) => {
+      if (!rec.ok) rec.error = `${e?.name || 'Error'}: ${e?.message || e}`;
+      throw e;
+    });
+  }
+
+  buildPlan(firstPlan, only, remembered) {
+    const plan = [];
+    const tried = (d, r) => firstPlan.device.deviceId === d.deviceId && firstPlan.res === r && !!d.deviceId;
+    const add = (d) => { for (const r of [HI, LO]) if (!tried(d, r)) plan.push({ device: d, res: r, constraints: deviceConstraints(d.deviceId, r) }); };
+    const withIds = this.devices.filter((d) => d.deviceId);
+    if (only) {
+      add(withIds.find((d) => d.deviceId === only.deviceId) || only);
+      return plan;
+    }
+    const rem = remembered && (withIds.find((d) => d.deviceId === remembered.deviceId)
+      || (remembered.label && withIds.find((d) => d.label === remembered.label)));
+    const rest = withIds.filter((d) => d !== rem);
+    const normal = rest.filter((d) => !IR_RE.test(d.label));
+    const ir = rest.filter((d) => IR_RE.test(d.label));
+    for (const d of [rem, ...normal].filter(Boolean)) add(d);
+    for (const d of ir) add(d); // IR / Windows Hello cameras only once everything else failed
+    if (!withIds.length) plan.push({ device: { deviceId: '', label: 'Any camera' }, res: ANY, constraints: { video: true, audio: false } });
+    return plan;
+  }
+
+  async refreshDevices() {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      let n = 0;
+      this.devices = all.filter((d) => d.kind === 'videoinput').map((d) => ({ deviceId: d.deviceId, label: d.label || `Camera ${++n}`, rawLabel: d.label }));
+      n = 0;
+      for (const d of this.devices) { n++; if (!d.rawLabel) d.label = `Camera ${n}`; }
+    } catch {
+      this.devices = this.devices || [];
+    }
+    this.onDevices?.(this.devices, this.device);
+    return this.devices;
+  }
+
+  fail(err) {
+    return new CameraStepError('camera', err, { attempts: this.attempts.slice(), devices: (this.devices || []).slice() });
+  }
+
+  stopStream() {
+    if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    this.video.srcObject = null;
+    this.lastVideoTime = -1;
   }
 
   // Steps 2–4, after the stream promise from requestCamera().
   async start(streamPromise, onStatus) {
     this.notes = [];
     onStatus('Asking for camera…');
-    this.stream = await streamPromise;
+    const stream = await streamPromise;
+    if (this.stream && this.stream !== stream) this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = stream;
 
     // Step 2: video playback
     onStatus('Starting video…');
@@ -130,7 +243,7 @@ export class HandTracker {
       }
     }
     onStatus('');
-    return { delegate: this.delegate, width: v.videoWidth, height: v.videoHeight, notes: this.notes };
+    return { delegate: this.delegate, width: v.videoWidth, height: v.videoHeight, notes: this.notes, device: this.device, attempts: this.attempts };
   }
 
   async createLandmarker(delegate) {
@@ -195,16 +308,7 @@ export class HandTracker {
       let id = res.handedness?.[i]?.[0]?.categoryName || `h${i}`;
       if (seen.has(id)) id = `${id}${i}`;
       seen.add(id);
-      const pts = lm.map((p) => map(p.x, p.y));
-      const prev = this.state.get(id);
-      const smooth = (a, b, k) => (b ? { x: b.x + (a.x - b.x) * k, y: b.y + (a.y - b.y) * k } : a);
-      const tip = smooth(pts[8], prev?.tip, 0.65);
-      const thumb = smooth(pts[4], prev?.thumb, 0.65);
-      const scale = Math.hypot(pts[0].x - pts[5].x, pts[0].y - pts[5].y) || 1;
-      const ratio = Math.hypot(tip.x - thumb.x, tip.y - thumb.y) / scale;
-      const wasPinch = prev?.pinch || false;
-      const pinch = wasPinch ? ratio < 0.5 : ratio < 0.32; // hysteresis
-      const h = { id, tip, thumb, pinch, pinchPt: { x: (tip.x + thumb.x) / 2, y: (tip.y + thumb.y) / 2 }, pts };
+      const h = handFromLandmarks(id, lm, map, this.state.get(id));
       this.state.set(id, h);
       hands.push(h);
     });

@@ -20,6 +20,7 @@
         <button id="btn-camera" type="button" aria-pressed="false" title="Play with your hands (webcam)">Camera</button>
         <button id="btn-mouse" type="button" aria-pressed="true" title="Play with mouse or touch">Mouse</button>
       </div>
+      <label id="cam-select-wrap" class="cam-select chip" hidden title="Choose camera"><span class="sr">Camera</span><select id="cam-select" aria-label="Camera device"></select></label>
       <button id="btn-snap" class="chip" type="button" aria-pressed="true" title="Snap pitch to a pentatonic scale (S)"><span class="long">Pentatonic</span><span class="short">Snap</span> <span class="state">on</span></button>
       <button id="btn-clear" class="chip" type="button" title="Remove all strings (C)">Clear</button>
       <button id="btn-help" class="chip icon" type="button" aria-expanded="false" aria-controls="help" title="How to play (H)">?</button>
@@ -28,13 +29,15 @@
 
   <div id="status" class="status" aria-live="polite"></div>
   <div id="hint" class="hint">Click and drag to draw a string</div>
-  <p id="mini-help" class="mini-help"><span class="m">drag empty space: new string · sweep: pluck · drag end dot: retune · right-click: delete</span><span class="c">both hands pinch + pull: new string · swipe: pluck · pinch end: retune · fling middle: delete</span> · <kbd>C</kbd> clear</p>
+  <p id="mini-help" class="mini-help"><span class="m">drag empty space: new string · sweep: pluck · drag end dot: retune · right-click: delete</span><span class="c">pinch both hands in air + pull: new string · swipe: pluck · pinch both ends: move/retune · fling middle: delete</span> · <kbd>C</kbd> clear</p>
   <div id="cam-error" class="cam-error" role="alertdialog" aria-labelledby="cam-error-title" hidden>
     <div class="cam-error-title" id="cam-error-title">Camera didn't start</div>
     <div class="cam-error-row"><span class="lbl">Step</span> <code id="cam-error-step"></code></div>
     <code id="cam-error-msg" class="cam-error-msg"></code>
     <div id="cam-error-extra" class="cam-error-extra" hidden></div>
+    <ul id="cam-error-attempts" class="cam-error-attempts" aria-label="Cameras tried" hidden></ul>
     <p id="cam-error-hint" class="cam-error-hint"></p>
+    <label id="cam-error-select-wrap" class="cam-error-select" hidden>Try a specific camera <select id="cam-error-select" aria-label="Camera device"></select></label>
     <div class="cam-error-actions">
       <button id="btn-retry" type="button" class="chip primary">Retry</button>
       <button id="btn-use-mouse" type="button" class="chip">Use mouse</button>
@@ -51,9 +54,9 @@
       <section>
         <h3>Hands</h3>
         <ul>
-          <li><b>Make</b> pinch with both hands, pull apart, let go</li>
-          <li><b>Pluck</b> swipe a fingertip through a string; faster is louder</li>
-          <li><b>Retune</b> pinch an end and drag; shorter is higher</li>
+          <li><b>Make</b> pinch both hands in empty air, pull apart, let go</li>
+          <li><b>Pluck</b> swipe a fingertip through a string; faster is louder. Swipes never move strings</li>
+          <li><b>Move / retune</b> pinch <em>both</em> ends at once, one hand on each; shorter is higher</li>
           <li><b>Delete</b> pinch the middle and fling it away</li>
         </ul>
       </section>
@@ -62,7 +65,7 @@
         <ul>
           <li><b>Make</b> click and drag on empty space</li>
           <li><b>Pluck</b> sweep across a string, or drag across from one</li>
-          <li><b>Retune</b> drag an end dot</li>
+          <li><b>Retune</b> drag one end dot (mouse only, for testing)</li>
           <li><b>Delete</b> right-click or double-click a string</li>
         </ul>
       </section>

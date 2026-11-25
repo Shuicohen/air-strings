@@ -1,5 +1,6 @@
-import { AudioEngine, snapPentatonic, noteName } from './audio.js';
+import { AudioEngine, noteName, freqForLength } from './audio.js';
 import { HandTracker } from './hands.js';
+import { createGestures, dist } from './gestures.js';
 
 const MAX_STRINGS = 8;
 const MIN_LEN = 48;
@@ -15,6 +16,8 @@ const ui = {
   status: $('status'), toast: $('toast'), hint: $('hint'),
   errPanel: $('cam-error'), errStep: $('cam-error-step'), errMsg: $('cam-error-msg'), errExtra: $('cam-error-extra'),
   errHint: $('cam-error-hint'), errRetry: $('btn-retry'), errMouse: $('btn-use-mouse'),
+  camSelect: $('cam-select'), camSelectWrap: $('cam-select-wrap'), errSelect: $('cam-error-select'), errSelectWrap: $('cam-error-select-wrap'),
+  errAttempts: $('cam-error-attempts'),
 };
 
 const audio = new AudioEngine();
@@ -35,37 +38,17 @@ window.airStrings = {
   get count() { return app.strings.length; },
   get mode() { return app.mode; },
   get snap() { return app.snap; },
-  get camera() { return { delegate: tracker.delegate, width: video.videoWidth, height: video.videoHeight, active: tracker.active, notes: tracker.notes.slice() }; },
+  get camera() { return { device: tracker.device?.label || null, devices: (tracker.devices || []).map((d) => d.label), attempts: (tracker.attempts || []).slice(), delegate: tracker.delegate, width: video.videoWidth, height: video.videoHeight, active: tracker.active, notes: tracker.notes.slice() }; },
   strings: () => app.strings.map((s) => ({ id: s.id, freq: +s.freq.toFixed(2), note: noteName(s.freq), len: Math.round(len(s)) })),
   audio: () => ({ state: audio.ctx ? audio.ctx.state : 'none', sampleRate: audio.ctx?.sampleRate, rms: audio.rms() }),
 };
 
 // ---------- geometry ----------
-const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const len = (s) => dist(s.a, s.b);
-function segIntersect(p, q, a, b) {
-  const r = { x: q.x - p.x, y: q.y - p.y };
-  const s = { x: b.x - a.x, y: b.y - a.y };
-  const den = r.x * s.y - r.y * s.x;
-  if (Math.abs(den) < 1e-9) return null;
-  const t = ((a.x - p.x) * s.y - (a.y - p.y) * s.x) / den;
-  const u = ((a.x - p.x) * r.y - (a.y - p.y) * r.x) / den;
-  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
-  return { x: p.x + r.x * t, y: p.y + r.y * t, u };
-}
-function distToSeg(p, a, b) {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const l2 = dx * dx + dy * dy || 1;
-  const u = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
-  return { d: Math.hypot(p.x - (a.x + dx * u), p.y - (a.y + dy * u)), u };
-}
 
 // ---------- pitch ----------
 function lenToFreq(L) {
-  const ref = Math.min(app.w, app.h) * 0.5; // a string this long ≈ C4
-  let f = 262 * (ref / Math.max(L, 20));
-  f = Math.max(82, Math.min(1568, f));
-  return app.snap ? snapPentatonic(f) : f;
+  return freqForLength(L, Math.min(app.w, app.h) * 0.5, app.snap);
 }
 // each string gets its own colour from a palette; pitch nudges it slightly
 const PALETTE = [190, 300, 38, 140, 265, 12, 170, 52];
@@ -99,7 +82,7 @@ function removeString(s, sparks = true) {
     }
   }
   s.voice?.dispose();
-  for (const c of app.cursors.values()) if (c.target?.s === s) c.target = null;
+  gestures.forget(s);
   if (app.selected === s) app.selected = null;
   setTimeout(() => { app.strings = app.strings.filter((x) => x !== s); refreshHint(); }, 450);
 }
@@ -148,163 +131,43 @@ function burst(p, hue, n, v) {
   if (app.sparks.length > 900) app.sparks.splice(0, app.sparks.length - 900);
 }
 
-// ---------- unified cursor handling (mouse/touch/hands) ----------
-// cursor: { id, kind, pos, prev, vel, down, mode, target, start, pluckPos, pluckPrev }
-function cursorFor(id, kind) {
-  let c = app.cursors.get(id);
-  if (!c) {
-    c = { id, kind, pos: null, prev: null, vel: { x: 0, y: 0 }, down: false, mode: null, target: null, start: null, pluckPos: null, pluckPrev: null, t: now() };
-    app.cursors.set(id, c);
-  }
-  return c;
-}
-function grabRadius(c) { return c.kind === 'hand' ? 56 : 26; }
-
-function hitEndpoint(p, r) {
-  let best = null, bd = r;
-  for (const s of app.strings) {
-    if (s.dying) continue;
-    for (const end of ['a', 'b']) {
-      const d = dist(p, s[end]);
-      if (d < bd) { bd = d; best = { s, end }; }
-    }
-  }
-  return best;
-}
-function hitBody(p, r) {
-  let best = null, bd = r;
-  for (const s of app.strings) {
-    if (s.dying) continue;
-    const h = distToSeg(p, s.a, s.b);
-    if (h.d < bd && h.u > 0.12 && h.u < 0.88) { bd = h.d; best = { s, u: h.u }; }
-  }
-  return best;
-}
-
-function moveCursor(c, pos, pluckPos, t = now()) {
-  // clamp so a move after a pause (or a burst of coalesced events) still gives a sane speed
-  const dt = Math.min(0.05, Math.max(0.008, (t - c.t) / 1000));
-  c.prev = c.pos;
-  c.pos = { ...pos };
-  if (c.prev) {
-    const k = 0.5;
-    c.vel = { x: c.vel.x * (1 - k) + ((pos.x - c.prev.x) / dt) * k, y: c.vel.y * (1 - k) + ((pos.y - c.prev.y) / dt) * k };
-  }
-  c.pluckPrev = c.pluckPos;
-  c.pluckPos = pluckPos ? { ...pluckPos } : { ...pos };
-  c.t = t;
-  c.dt = dt;
-}
-
-function cursorDown(c) {
-  c.down = true;
-  c.start = { ...c.pos };
-  const ep = hitEndpoint(c.pos, grabRadius(c));
-  if (ep) { c.mode = 'stretch'; c.target = ep; app.selected = ep.s; return; }
-  const body = hitBody(c.pos, c.kind === 'hand' ? 40 : 16);
-  if (body) {
-    if (c.kind === 'hand') { c.mode = 'hold'; c.target = { s: body.s }; app.selected = body.s; return; }
-    c.mode = 'strum';
-    pluck(body.s, 0.55, c.pos, body.u);
-    app.cooldown.set(`${c.id}:${body.s.id}`, now());
-    return;
-  }
-  c.mode = 'free';
-}
-
-function cursorUp(c) {
-  if (!c.down) return;
-  c.down = false;
-  if (c.mode === 'free' && c.kind !== 'hand') {
-    if (dist(c.start, c.pos) >= MIN_LEN) addString(c.start, c.pos);
-  } else if (c.mode === 'free' && c.kind === 'hand') {
-    const other = [...app.cursors.values()].find((o) => o !== c && o.kind === 'hand' && o.down && o.mode === 'free');
-    if (other && dist(c.pos, other.pos) >= MIN_LEN) {
-      addString(c.pos, other.pos);
-      other.mode = 'spent'; // the other hand has to release before it can start something new
-    }
-  } else if (c.mode === 'hold' && c.target) {
-    if (Math.hypot(c.vel.x, c.vel.y) > 1600) removeString(c.target.s);
-  }
-  c.mode = null;
-  c.target = null;
-}
-
-function cursorDrag(c) {
-  if (!c.prev) return;
-  const dx = c.pos.x - c.prev.x, dy = c.pos.y - c.prev.y;
-  if (c.mode === 'stretch' && c.target) {
-    const s = c.target.s;
-    s[c.target.end] = { ...c.pos };
-    retune(s);
-  } else if (c.mode === 'hold' && c.target) {
-    const s = c.target.s;
-    s.a.x += dx; s.a.y += dy; s.b.x += dx; s.b.y += dy;
-    updatePan(s);
-    if (Math.hypot(c.vel.x, c.vel.y) > 2600) { removeString(s); c.target = null; c.mode = 'spent'; }
-  } else if (c.mode === 'strum') {
-    tryPluck(c, c.prev, c.pos);
-  }
-}
-
-function tryPluck(c, p, q) {
-  if (!p || !q || (p.x === q.x && p.y === q.y)) return;
-  const speed = dist(p, q) / (c.dt || 0.016);
-  for (const s of app.strings) {
-    if (s.dying) continue;
-    if (c.target?.s === s) continue;
-    const hit = segIntersect(p, q, s.a, s.b);
-    if (!hit) continue;
-    const key = `${c.id}:${s.id}`;
-    if (now() - (app.cooldown.get(key) || 0) < PLUCK_COOLDOWN) continue;
-    app.cooldown.set(key, now());
-    pluck(s, speed / 3000, hit, hit.u);
-  }
-}
-
-// Called every frame for idle (not pressed) cursors: fingertip / hover sweeps pluck.
-function cursorIdle(c) {
-  tryPluck(c, c.pluckPrev, c.pluckPos);
-}
+// ---------- gestures (see gestures.js for the rules) ----------
+const gestures = createGestures({
+  now: () => now(),
+  minLen: MIN_LEN,
+  cooldown: PLUCK_COOLDOWN,
+  getStrings: () => app.strings,
+  onCreate: (a, b) => addString(a, b),
+  onPluck: (s, v, at, u) => pluck(s, v, at, u),
+  onChange: (s) => retune(s),
+  onDelete: (s) => removeString(s),
+  onSelect: (s) => { app.selected = s; },
+});
+app.cursors = gestures.cursors;
 
 // ---------- pointer input ----------
-canvas.addEventListener('pointerdown', async (e) => {
+const kindOf = (e) => (e.pointerType === 'touch' ? 'touch' : 'mouse');
+canvas.addEventListener('pointerdown', (e) => {
   if (e.button === 2) return;
   ensureAudio();
   canvas.setPointerCapture(e.pointerId);
-  const c = cursorFor(`p${e.pointerId}`, e.pointerType === 'touch' ? 'touch' : 'mouse');
-  moveCursor(c, pt(e));
-  cursorDown(c);
+  gestures.pointerDown(`p${e.pointerId}`, kindOf(e), pt(e), now());
 });
 canvas.addEventListener('pointermove', (e) => {
-  const c = cursorFor(`p${e.pointerId}`, e.pointerType === 'touch' ? 'touch' : 'mouse');
-  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-  for (const ev of evs.length ? evs : [e]) {
-    moveCursor(c, pt(ev), null, ev.timeStamp || now());
-    if (c.down) cursorDrag(c);
-    else if (c.kind === 'mouse') cursorIdle(c);
-  }
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  for (const ev of evs.length ? evs : [e]) gestures.pointerMove(`p${e.pointerId}`, kindOf(e), pt(ev), ev.timeStamp || now());
 });
-const endPointer = (e) => {
-  const c = app.cursors.get(`p${e.pointerId}`);
-  if (!c) return;
-  moveCursor(c, pt(e));
-  cursorUp(c);
-  if (c.kind === 'touch') app.cursors.delete(c.id);
-};
+const endPointer = (e) => gestures.pointerUp(`p${e.pointerId}`, pt(e), now());
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
-canvas.addEventListener('pointerleave', (e) => {
-  const c = app.cursors.get(`p${e.pointerId}`);
-  if (c && !c.down) { c.pos = null; c.prev = null; c.pluckPos = null; c.pluckPrev = null; }
-});
+canvas.addEventListener('pointerleave', (e) => gestures.pointerLeave(`p${e.pointerId}`));
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  const b = hitBody(pt(e), 18) || hitEndpoint(pt(e), 26);
+  const b = gestures.hitBody(pt(e), 18) || gestures.hitEndpoint(pt(e), 26);
   if (b) removeString(b.s);
 });
 canvas.addEventListener('dblclick', (e) => {
-  const b = hitBody(pt(e), 14);
+  const b = gestures.hitBody(pt(e), 14);
   if (b) removeString(b.s);
 });
 function pt(e) {
@@ -339,23 +202,9 @@ function updateHands() {
   if (!tracker.active) return;
   let hands = [];
   try { hands = tracker.update(videoMapper().map); } catch (err) { return; }
-  const live = new Set();
-  for (const h of hands) {
-    const id = `hand-${h.id}`;
-    live.add(id);
-    const c = cursorFor(id, 'hand');
-    c.hand = h;
-    moveCursor(c, h.pinchPt, h.tip);
-    if (h.pinch && !c.down) cursorDown(c);
-    else if (!h.pinch && c.down) cursorUp(c);
-    else if (c.down) cursorDrag(c);
-    if (!c.down) cursorIdle(c);
-  }
-  for (const [id, c] of app.cursors) {
-    if (c.kind === 'hand' && !live.has(id)) { if (c.down) { c.mode = null; c.down = false; } app.cursors.delete(id); }
-  }
+  gestures.handsFrame(hands, now());
   const v = video;
-  const info = `${tracker.delegate || '?'} · ${v.videoWidth}×${v.videoHeight}`;
+  const info = `${tracker.device?.label || 'Camera'} · ${tracker.delegate || '?'} · ${v.videoWidth}×${v.videoHeight}`;
   ui.status.textContent = `${info} · ${hands.length ? `${hands.length} hand${hands.length > 1 ? 's' : ''} tracked` : 'show your hands'}`;
 }
 
@@ -370,12 +219,14 @@ function setSnap(on) {
   app.strings.forEach(retune);
   toast(on ? 'Pentatonic snap on' : 'Free tuning (snap off)');
 }
-// Must run synchronously inside a click handler: getUserMedia is called before any await.
-function startCamera() {
+// Must run synchronously inside a click/change handler: getUserMedia is called before any await.
+// opts.deviceId switches to (only) that camera.
+function startCamera(opts = {}) {
   if (app.camStarting) return;
   app.camStarting = true;
   hideCamError();
-  const streamPromise = tracker.requestCamera(); // user gesture still active here
+  if (opts.deviceId) tracker.stopStream(); // release the current camera before opening another
+  const streamPromise = tracker.requestCamera(opts); // user gesture still active here
   ensureAudio(); // creates/resumes the AudioContext in the same gesture
   ui.cam.disabled = true;
   ui.cam.setAttribute('aria-pressed', 'true');
@@ -385,12 +236,16 @@ function startCamera() {
       app.mode = 'camera';
       app.camInfo = info;
       document.body.classList.add('camera-on');
-      toast(info.delegate === 'CPU' ? 'Camera on (CPU tracking): frames stay on this device' : 'Camera on: frames stay on this device');
+      renderDeviceSelects();
+      const tried = info.attempts.length > 1 ? ` after ${info.attempts.length - 1} failed attempt${info.attempts.length > 2 ? 's' : ''}` : '';
+      toast(`Camera on: ${info.device?.label || 'camera'}${tried}`);
+      if (info.attempts.length > 1) console.info('[air-strings] camera attempts:', info.attempts.map((a) => `${a.label} @ ${a.res}: ${a.error || 'ok'}`).join(' | '));
       if (info.notes.length) console.info('[air-strings]', info.notes.join(' '));
     })
     .catch((err) => {
       tracker.stop();
       app.mode = 'mouse';
+      app.camInfo = null;
       document.body.classList.remove('camera-on');
       ui.status.textContent = '';
       showCamError(err);
@@ -403,10 +258,35 @@ function startCamera() {
       refreshHint();
     });
 }
+function renderDeviceSelects() {
+  const devs = (tracker.devices || []).filter((d) => d.deviceId);
+  const active = tracker.device?.deviceId || '';
+  for (const sel of [ui.camSelect, ui.errSelect]) {
+    sel.replaceChildren(...devs.map((d) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label;
+      o.selected = d.deviceId === active;
+      return o;
+    }));
+  }
+  // the panel picker starts on a placeholder so choosing any camera fires 'change'
+  const ph = document.createElement('option');
+  ph.value = ''; ph.textContent = 'Choose a camera…'; ph.disabled = true; ph.selected = true;
+  ui.errSelect.prepend(ph);
+  ui.camSelectWrap.hidden = !devs.length;
+  ui.errSelectWrap.hidden = !devs.length;
+}
+tracker.onDevices = () => renderDeviceSelects();
+function onSelectDevice(e) {
+  const id = e.target.value;
+  if (!id) return;
+  const d = tracker.devices.find((x) => x.deviceId === id);
+  startCamera({ deviceId: id, label: d?.label || '' });
+}
 function useMouse() {
   hideCamError();
   tracker.stop();
-  for (const [id, c] of app.cursors) if (c.kind === 'hand') app.cursors.delete(id);
+  gestures.clearHands();
   app.mode = 'mouse';
   app.camInfo = null;
   document.body.classList.remove('camera-on');
@@ -442,7 +322,31 @@ function showCamError(err) {
   const extra = [err?.firstError && `First attempt: ${err.firstError}`, err?.gpuError && `GPU attempt: ${err.gpuError}`].filter(Boolean).join(' · ');
   ui.errExtra.textContent = extra;
   ui.errExtra.hidden = !extra;
-  ui.errHint.textContent = hintFor({ ...err, errName: name, step });
+  const attempts = err?.attempts || [];
+  const groups = [];
+  for (const a of attempts) {
+    let g = groups.find((x) => x.label === a.label && x.deviceId === a.deviceId);
+    if (!g) groups.push((g = { label: a.label, deviceId: a.deviceId, tries: [] }));
+    g.tries.push(a);
+  }
+  ui.errAttempts.replaceChildren(...groups.map((g) => {
+    const li = document.createElement('li');
+    const b = document.createElement('b'); b.textContent = g.label;
+    li.append(b);
+    for (const t of g.tries) {
+      const d = document.createElement('div');
+      d.textContent = `${t.res}: ${t.error || 'ok'}`;
+      li.append(d);
+    }
+    return li;
+  }));
+  ui.errAttempts.hidden = !groups.length;
+  let hint = hintFor({ ...err, errName: name, step });
+  if (attempts.length && attempts.every((a) => (a.error || '').startsWith('NotReadableError'))) {
+    hint = 'Another app or browser tab may be using the camera (Teams, Zoom, Camera app, Windows Hello). Close it and press Retry.';
+  }
+  ui.errHint.textContent = hint;
+  renderDeviceSelects();
   ui.errPanel.hidden = false;
   console.info('[air-strings] camera start failed at step', step, `${name}: ${msg}`);
 }
@@ -463,13 +367,15 @@ function refreshHint() {
   const empty = app.strings.filter((s) => !s.dying).length === 0;
   ui.hint.hidden = !empty;
   ui.hint.textContent = app.mode === 'camera'
-    ? 'Pinch with both hands, pull apart, and let go to make a string'
+    ? 'Pinch with both hands in empty air, pull apart, and let go to make a string'
     : 'Click and drag to draw a string';
 }
 ui.cam.addEventListener('click', () => { if (app.mode !== 'camera') startCamera(); });
 ui.mouse.addEventListener('click', () => { ensureAudio(); useMouse(); });
 ui.errRetry.addEventListener('click', () => startCamera());
 ui.errMouse.addEventListener('click', () => useMouse());
+ui.camSelect.addEventListener('change', onSelectDevice);
+ui.errSelect.addEventListener('change', onSelectDevice);
 ui.snap.addEventListener('click', () => { ensureAudio(); setSnap(!app.snap); });
 ui.clear.addEventListener('click', () => { ensureAudio(); clearAll(); });
 ui.help.addEventListener('click', () => toggleHelp());
@@ -563,12 +469,14 @@ function drawStrings(t) {
     strokePath(pts);
     // endpoints
     for (const end of [s.a, s.b]) {
-      const grabbed = [...app.cursors.values()].some((c) => c.target?.s === s && s[c.target.end] === end);
-      const r = grabbed ? 9 : 5.5;
+      const es = gestures.endState(s, end === s.a ? 'a' : 'b');
+      const grabbed = es === 'move';
+      const waiting = es === 'wait';
+      const r = grabbed ? 9 : waiting ? 7.5 : 5.5;
       ctx.shadowBlur = 18;
       ctx.fillStyle = `hsla(${s.hue}, 100%, ${grabbed ? 85 : 70}%, 0.95)`;
       ctx.beginPath(); ctx.arc(end.x, end.y, r, 0, Math.PI * 2); ctx.fill();
-      if (sel || grabbed) {
+      if (sel || grabbed || waiting) {
         ctx.shadowBlur = 0;
         ctx.strokeStyle = `hsla(${s.hue}, 100%, 80%, 0.5)`;
         ctx.lineWidth = 1;
@@ -584,7 +492,7 @@ function drawStrings(t) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = `hsla(${s.hue}, 90%, 82%, ${sel ? 0.95 : 0.6})`;
-    const stretching = [...app.cursors.values()].some((c) => c.mode === 'stretch' && c.target?.s === s);
+    const stretching = gestures.isMoving(s);
     ctx.fillText(stretching ? `${noteName(s.freq)} · ${Math.round(s.freq)} Hz` : noteName(s.freq), mx + nx * off, my + ny * off);
     ctx.globalCompositeOperation = 'lighter';
   }
@@ -592,12 +500,7 @@ function drawStrings(t) {
 }
 
 function drawPreview() {
-  const segs = [];
-  for (const c of app.cursors.values()) {
-    if (c.kind !== 'hand' && c.down && c.mode === 'free' && c.start && c.pos) segs.push([c.start, c.pos]);
-  }
-  const hs = [...app.cursors.values()].filter((c) => c.kind === 'hand' && c.down && c.mode === 'free');
-  if (hs.length >= 2) segs.push([hs[0].pos, hs[1].pos]);
+  const segs = gestures.previews();
   for (const [a, b] of segs) {
     const L = dist(a, b);
     const ok = L >= MIN_LEN;
