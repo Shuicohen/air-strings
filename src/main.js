@@ -17,7 +17,7 @@ const ui = {
   errPanel: $('cam-error'), errStep: $('cam-error-step'), errMsg: $('cam-error-msg'), errExtra: $('cam-error-extra'),
   errHint: $('cam-error-hint'), errRetry: $('btn-retry'), errMouse: $('btn-use-mouse'),
   camSelect: $('cam-select'), camSelectWrap: $('cam-select-wrap'), errSelect: $('cam-error-select'), errSelectWrap: $('cam-error-select-wrap'),
-  errAttempts: $('cam-error-attempts'),
+  errAttempts: $('cam-error-attempts'), sound: $('btn-sound'), engine: $('audio-engine'),
 };
 
 const audio = new AudioEngine();
@@ -40,7 +40,8 @@ window.airStrings = {
   get snap() { return app.snap; },
   get camera() { return { device: tracker.device?.label || null, devices: (tracker.devices || []).map((d) => d.label), attempts: (tracker.attempts || []).slice(), delegate: tracker.delegate, width: video.videoWidth, height: video.videoHeight, active: tracker.active, notes: tracker.notes.slice() }; },
   strings: () => app.strings.map((s) => ({ id: s.id, freq: +s.freq.toFixed(2), note: noteName(s.freq), len: Math.round(len(s)) })),
-  audio: () => ({ state: audio.ctx ? audio.ctx.state : 'none', sampleRate: audio.ctx?.sampleRate, rms: audio.rms() }),
+  suspendAudio: () => audio.ctx?.suspend(), // test hook: simulate iOS suspending audio
+  audio: () => ({ state: audio.state, engine: audio.engine, note: audio.engineNote, sampleRate: audio.ctx?.sampleRate, rms: audio.rms(), soundButton: !ui.sound.hidden }),
 };
 
 // ---------- geometry ----------
@@ -212,6 +213,22 @@ function updateHands() {
 async function ensureAudio() {
   try { await audio.start(); } catch (err) { console.warn('Audio could not start', err); }
 }
+// iOS: unlock synchronously in gestures; retry resume on later taps and when visible again
+const pokeAudio = () => { if (audio.ctx) audio.poke(); };
+for (const ev of ['touchend', 'pointerup', 'click', 'keydown']) {
+  document.addEventListener(ev, () => { if (audio.state !== 'running') audio.unlock(); }, { capture: true, passive: true });
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pokeAudio(); });
+window.addEventListener('pageshow', pokeAudio);
+function renderAudioUi() {
+  const st = audio.state;
+  ui.sound.hidden = st === 'running';
+  ui.sound.textContent = st === 'interrupted' ? 'Tap to resume sound' : 'Tap for sound';
+  ui.engine.textContent = audio.engine ? `sound: ${audio.engine}${st !== 'running' ? ` (${st})` : ''}` : (st === 'none' ? '' : `sound: ${st}`);
+  ui.engine.title = audio.engineNote || '';
+}
+audio.onState = renderAudioUi;
+ui.sound.addEventListener('click', () => { audio.unlock(); ensureAudio().then(renderAudioUi); });
 function setSnap(on) {
   app.snap = on;
   ui.snap.setAttribute('aria-pressed', String(on));
@@ -226,8 +243,9 @@ function startCamera(opts = {}) {
   app.camStarting = true;
   hideCamError();
   if (opts.deviceId) tracker.stopStream(); // release the current camera before opening another
+  audio.unlock(); // create/resume the AudioContext + silent buffer, synchronously in the gesture
   const streamPromise = tracker.requestCamera(opts); // user gesture still active here
-  ensureAudio(); // creates/resumes the AudioContext in the same gesture
+  ensureAudio();
   ui.cam.disabled = true;
   ui.cam.setAttribute('aria-pressed', 'true');
   ui.mouse.setAttribute('aria-pressed', 'false');
@@ -368,10 +386,10 @@ function refreshHint() {
   ui.hint.hidden = !empty;
   ui.hint.textContent = app.mode === 'camera'
     ? 'Pinch with both hands in empty air, pull apart, and let go to make a string'
-    : 'Click and drag to draw a string';
+    : (window.matchMedia?.('(pointer: coarse)').matches ? 'Drag a finger to draw a string' : 'Click and drag to draw a string');
 }
 ui.cam.addEventListener('click', () => { if (app.mode !== 'camera') startCamera(); });
-ui.mouse.addEventListener('click', () => { ensureAudio(); useMouse(); });
+ui.mouse.addEventListener('click', () => { audio.unlock(); ensureAudio(); useMouse(); });
 ui.errRetry.addEventListener('click', () => startCamera());
 ui.errMouse.addEventListener('click', () => useMouse());
 ui.camSelect.addEventListener('change', onSelectDevice);
@@ -397,15 +415,18 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
+// Additive glow looks great on the dark background but washes out to white over a
+// bright camera image, so camera mode draws normally with a thin dark contrast edge.
+const cameraVisible = () => tracker.active && video.readyState >= 2;
+const blendMode = () => (cameraVisible() ? 'source-over' : 'lighter');
+
 function drawBackground() {
   if (tracker.active && video.readyState >= 2) {
     const { ox, oy, dw, dh } = videoMapper();
     ctx.save();
     ctx.translate(app.w, 0); ctx.scale(-1, 1); // mirror
     ctx.drawImage(video, app.w - ox - dw, oy, dw, dh);
-    ctx.restore();
-    ctx.fillStyle = 'rgba(4, 6, 14, 0.62)';
-    ctx.fillRect(0, 0, app.w, app.h);
+    ctx.restore(); // clean feed: no tint, overlay or filter
   } else {
     const g = ctx.createRadialGradient(app.w * 0.5, app.h * 0.45, 0, app.w * 0.5, app.h * 0.5, Math.max(app.w, app.h) * 0.75);
     g.addColorStop(0, '#0d1424');
@@ -444,7 +465,7 @@ function strokePath(pts) {
 
 function drawStrings(t) {
   ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalCompositeOperation = blendMode();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const s of app.strings) {
@@ -454,6 +475,12 @@ function drawStrings(t) {
     const glow = 0.55 + Math.min(1, env) * 0.6;
     const sel = app.selected === s;
     ctx.globalAlpha = fade;
+    if (cameraVisible()) {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)';
+      ctx.lineWidth = 6;
+      strokePath(pts);
+    }
     ctx.shadowColor = `hsla(${s.hue}, 100%, 60%, 1)`;
     ctx.shadowBlur = 26 * glow;
     ctx.strokeStyle = `hsla(${s.hue}, 100%, 60%, ${0.22 * glow})`;
@@ -491,10 +518,13 @@ function drawStrings(t) {
     ctx.font = '600 13px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = `hsla(${s.hue}, 90%, 82%, ${sel ? 0.95 : 0.6})`;
+    const cam = cameraVisible();
+    ctx.fillStyle = `hsla(${s.hue}, 90%, ${cam ? 88 : 82}%, ${sel || cam ? 0.95 : 0.6})`;
+    if (cam) { ctx.shadowColor = 'rgba(0, 0, 0, 0.85)'; ctx.shadowBlur = 4; }
     const stretching = gestures.isMoving(s);
     ctx.fillText(stretching ? `${noteName(s.freq)} · ${Math.round(s.freq)} Hz` : noteName(s.freq), mx + nx * off, my + ny * off);
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = blendMode();
   }
   ctx.restore();
 }
@@ -507,7 +537,7 @@ function drawPreview() {
     const f = lenToFreq(L);
     const hue = hueFor(f, { id: app.nextId });
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation = blendMode();
     ctx.setLineDash([6, 8]);
     ctx.lineDashOffset = -now() / 30;
     ctx.strokeStyle = `hsla(${hue}, 100%, 70%, ${ok ? 0.8 : 0.3})`;
@@ -530,7 +560,7 @@ function drawPreview() {
 
 function drawSparks(dt) {
   ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalCompositeOperation = blendMode();
   const keep = [];
   for (const p of app.sparks) {
     p.life += dt;
@@ -548,7 +578,7 @@ function drawSparks(dt) {
 
 function drawCursors() {
   ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalCompositeOperation = blendMode();
   for (const c of app.cursors.values()) {
     if (!c.pos) continue;
     if (c.kind === 'hand' && c.hand) {
@@ -590,4 +620,6 @@ function frame() {
 
 resize();
 refreshHint();
+renderAudioUi();
+setInterval(renderAudioUi, 1000); // iOS can suspend/interrupt without a statechange we see
 requestAnimationFrame(frame);
