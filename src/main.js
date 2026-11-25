@@ -178,9 +178,9 @@ function hitBody(p, r) {
   return best;
 }
 
-function moveCursor(c, pos, pluckPos) {
-  const t = now();
-  const dt = Math.max(1, t - c.t) / 1000;
+function moveCursor(c, pos, pluckPos, t = now()) {
+  // clamp so a move after a pause (or a burst of coalesced events) still gives a sane speed
+  const dt = Math.min(0.05, Math.max(0.008, (t - c.t) / 1000));
   c.prev = c.pos;
   c.pos = { ...pos };
   if (c.prev) {
@@ -255,7 +255,7 @@ function tryPluck(c, p, q) {
     const key = `${c.id}:${s.id}`;
     if (now() - (app.cooldown.get(key) || 0) < PLUCK_COOLDOWN) continue;
     app.cooldown.set(key, now());
-    pluck(s, speed / 2400, hit, hit.u);
+    pluck(s, speed / 3000, hit, hit.u);
   }
 }
 
@@ -277,7 +277,7 @@ canvas.addEventListener('pointermove', (e) => {
   const c = cursorFor(`p${e.pointerId}`, e.pointerType === 'touch' ? 'touch' : 'mouse');
   const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
   for (const ev of evs.length ? evs : [e]) {
-    moveCursor(c, pt(ev));
+    moveCursor(c, pt(ev), null, ev.timeStamp || now());
     if (c.down) cursorDrag(c);
     else if (c.kind === 'mouse') cursorIdle(c);
   }
