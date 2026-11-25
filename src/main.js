@@ -13,6 +13,8 @@ const ui = {
   cam: $('btn-camera'), mouse: $('btn-mouse'), snap: $('btn-snap'), clear: $('btn-clear'),
   help: $('btn-help'), helpPanel: $('help'), helpClose: $('btn-help-close'),
   status: $('status'), toast: $('toast'), hint: $('hint'),
+  errPanel: $('cam-error'), errStep: $('cam-error-step'), errMsg: $('cam-error-msg'), errExtra: $('cam-error-extra'),
+  errHint: $('cam-error-hint'), errRetry: $('btn-retry'), errMouse: $('btn-use-mouse'),
 };
 
 const audio = new AudioEngine();
@@ -33,6 +35,7 @@ window.airStrings = {
   get count() { return app.strings.length; },
   get mode() { return app.mode; },
   get snap() { return app.snap; },
+  get camera() { return { delegate: tracker.delegate, width: video.videoWidth, height: video.videoHeight, active: tracker.active, notes: tracker.notes.slice() }; },
   strings: () => app.strings.map((s) => ({ id: s.id, freq: +s.freq.toFixed(2), note: noteName(s.freq), len: Math.round(len(s)) })),
   audio: () => ({ state: audio.ctx ? audio.ctx.state : 'none', sampleRate: audio.ctx?.sampleRate, rms: audio.rms() }),
 };
@@ -335,7 +338,7 @@ function videoMapper() {
 function updateHands() {
   if (!tracker.active) return;
   let hands = [];
-  try { hands = tracker.update(videoMapper().map); } catch (err) { console.warn('hand tracking frame skipped', err); return; }
+  try { hands = tracker.update(videoMapper().map); } catch (err) { return; }
   const live = new Set();
   for (const h of hands) {
     const id = `hand-${h.id}`;
@@ -351,7 +354,9 @@ function updateHands() {
   for (const [id, c] of app.cursors) {
     if (c.kind === 'hand' && !live.has(id)) { if (c.down) { c.mode = null; c.down = false; } app.cursors.delete(id); }
   }
-  ui.status.textContent = hands.length ? `${hands.length} hand${hands.length > 1 ? 's' : ''} tracked` : 'Show your hands to the camera';
+  const v = video;
+  const info = `${tracker.delegate || '?'} · ${v.videoWidth}×${v.videoHeight}`;
+  ui.status.textContent = `${info} · ${hands.length ? `${hands.length} hand${hands.length > 1 ? 's' : ''} tracked` : 'show your hands'}`;
 }
 
 // ---------- UI ----------
@@ -365,33 +370,83 @@ function setSnap(on) {
   app.strings.forEach(retune);
   toast(on ? 'Pentatonic snap on' : 'Free tuning (snap off)');
 }
-async function setMode(mode) {
-  if (mode === app.mode) return;
-  ensureAudio();
-  if (mode === 'camera') {
-    ui.cam.disabled = true;
-    try {
-      await tracker.start((m) => { ui.status.textContent = m; });
+// Must run synchronously inside a click handler: getUserMedia is called before any await.
+function startCamera() {
+  if (app.camStarting) return;
+  app.camStarting = true;
+  hideCamError();
+  const streamPromise = tracker.requestCamera(); // user gesture still active here
+  ensureAudio(); // creates/resumes the AudioContext in the same gesture
+  ui.cam.disabled = true;
+  ui.cam.setAttribute('aria-pressed', 'true');
+  ui.mouse.setAttribute('aria-pressed', 'false');
+  tracker.start(streamPromise, (m) => { ui.status.textContent = m; })
+    .then((info) => {
       app.mode = 'camera';
+      app.camInfo = info;
       document.body.classList.add('camera-on');
-      toast('Camera on: frames stay on this device');
-    } catch (err) {
+      toast(info.delegate === 'CPU' ? 'Camera on (CPU tracking): frames stay on this device' : 'Camera on: frames stay on this device');
+      if (info.notes.length) console.info('[air-strings]', info.notes.join(' '));
+    })
+    .catch((err) => {
       tracker.stop();
       app.mode = 'mouse';
+      document.body.classList.remove('camera-on');
       ui.status.textContent = '';
-      toast(err && err.name === 'NotAllowedError' ? 'Camera permission was blocked' : `Camera unavailable: ${err?.message || err}`);
-    } finally { ui.cam.disabled = false; }
-  } else {
-    tracker.stop();
-    for (const [id, c] of app.cursors) if (c.kind === 'hand') app.cursors.delete(id);
-    app.mode = 'mouse';
-    document.body.classList.remove('camera-on');
-    ui.status.textContent = '';
-  }
-  ui.cam.setAttribute('aria-pressed', String(app.mode === 'camera'));
-  ui.mouse.setAttribute('aria-pressed', String(app.mode === 'mouse'));
+      showCamError(err);
+    })
+    .finally(() => {
+      app.camStarting = false;
+      ui.cam.disabled = false;
+      ui.cam.setAttribute('aria-pressed', String(app.mode === 'camera'));
+      ui.mouse.setAttribute('aria-pressed', String(app.mode === 'mouse'));
+      refreshHint();
+    });
+}
+function useMouse() {
+  hideCamError();
+  tracker.stop();
+  for (const [id, c] of app.cursors) if (c.kind === 'hand') app.cursors.delete(id);
+  app.mode = 'mouse';
+  app.camInfo = null;
+  document.body.classList.remove('camera-on');
+  ui.status.textContent = '';
+  ui.cam.setAttribute('aria-pressed', 'false');
+  ui.mouse.setAttribute('aria-pressed', 'true');
   refreshHint();
 }
+tracker.onFatal = (err) => { useMouse(); showCamError(err); };
+tracker.onDelegateChange = (d) => { if (app.camInfo) app.camInfo.delegate = d; toast(`Hand tracking switched to ${d}`); };
+
+const ERROR_HINTS = {
+  NotAllowedError: 'Camera access is blocked for this site. Click the camera icon in the address bar (or Site settings), set Camera to Allow, then press Retry. Also check the OS: Windows Settings › Privacy › Camera, or macOS System Settings › Privacy & Security › Camera.',
+  SecurityError: 'The browser refused camera access for this page. It needs HTTPS and must not be inside a frame that blocks the camera.',
+  NotFoundError: 'No camera was found. Plug one in or enable it, then press Retry.',
+  NotReadableError: 'The camera is busy or blocked by the system. Close other apps that use it (Zoom, Teams, Meet, the Camera app), check Windows Settings › Privacy › Camera, then press Retry.',
+  OverconstrainedError: 'The camera did not accept the requested settings, even with the plain fallback.',
+  NotSupportedError: 'This browser does not support camera access. Try a current Chrome, Edge, Firefox or Safari.',
+  TimeoutError: 'The camera opened but no frames arrived. Another app may be holding it, or a privacy shutter is closed.',
+  AbortError: 'The camera failed to start. Press Retry, or restart the browser.',
+};
+function hintFor(err) {
+  if (err.step?.startsWith('tracker')) return 'The hand tracker could not load or start. It downloads from cdn.jsdelivr.net and storage.googleapis.com, so check that an ad blocker or network filter is not blocking them, then press Retry.';
+  if (err.step === 'tracking') return 'The hand tracker stopped working while running. Press Retry; if it keeps happening, your graphics driver may be the cause.';
+  return ERROR_HINTS[err.errName] || 'Press Retry, or use the mouse instead.';
+}
+function showCamError(err) {
+  const name = err?.errName || err?.name || 'Error';
+  const msg = err?.message || String(err);
+  const step = err?.step || 'camera';
+  ui.errStep.textContent = step;
+  ui.errMsg.textContent = `${name}: ${msg}`;
+  const extra = [err?.firstError && `First attempt: ${err.firstError}`, err?.gpuError && `GPU attempt: ${err.gpuError}`].filter(Boolean).join(' · ');
+  ui.errExtra.textContent = extra;
+  ui.errExtra.hidden = !extra;
+  ui.errHint.textContent = hintFor({ ...err, errName: name, step });
+  ui.errPanel.hidden = false;
+  console.info('[air-strings] camera start failed at step', step, `${name}: ${msg}`);
+}
+function hideCamError() { ui.errPanel.hidden = true; }
 function toggleHelp(force) {
   const open = force ?? ui.helpPanel.hidden;
   ui.helpPanel.hidden = !open;
@@ -411,8 +466,10 @@ function refreshHint() {
     ? 'Pinch with both hands, pull apart, and let go to make a string'
     : 'Click and drag to draw a string';
 }
-ui.cam.addEventListener('click', () => setMode('camera'));
-ui.mouse.addEventListener('click', () => setMode('mouse'));
+ui.cam.addEventListener('click', () => { if (app.mode !== 'camera') startCamera(); });
+ui.mouse.addEventListener('click', () => { ensureAudio(); useMouse(); });
+ui.errRetry.addEventListener('click', () => startCamera());
+ui.errMouse.addEventListener('click', () => useMouse());
 ui.snap.addEventListener('click', () => { ensureAudio(); setSnap(!app.snap); });
 ui.clear.addEventListener('click', () => { ensureAudio(); clearAll(); });
 ui.help.addEventListener('click', () => toggleHelp());

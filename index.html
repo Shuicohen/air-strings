@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <video id="video" playsinline muted></video>
+  <video id="video" playsinline muted autoplay></video>
   <canvas id="stage" aria-label="Instrument canvas"></canvas>
 
   <header class="bar">
@@ -29,6 +29,17 @@
   <div id="status" class="status" aria-live="polite"></div>
   <div id="hint" class="hint">Click and drag to draw a string</div>
   <p id="mini-help" class="mini-help"><span class="m">drag empty space: new string · sweep: pluck · drag end dot: retune · right-click: delete</span><span class="c">both hands pinch + pull: new string · swipe: pluck · pinch end: retune · fling middle: delete</span> · <kbd>C</kbd> clear</p>
+  <div id="cam-error" class="cam-error" role="alertdialog" aria-labelledby="cam-error-title" hidden>
+    <div class="cam-error-title" id="cam-error-title">Camera didn't start</div>
+    <div class="cam-error-row"><span class="lbl">Step</span> <code id="cam-error-step"></code></div>
+    <code id="cam-error-msg" class="cam-error-msg"></code>
+    <div id="cam-error-extra" class="cam-error-extra" hidden></div>
+    <p id="cam-error-hint" class="cam-error-hint"></p>
+    <div class="cam-error-actions">
+      <button id="btn-retry" type="button" class="chip primary">Retry</button>
+      <button id="btn-use-mouse" type="button" class="chip">Use mouse</button>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status"></div>
 
   <aside id="help" class="help" hidden>
